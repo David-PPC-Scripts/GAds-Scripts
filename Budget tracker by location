@@ -1,26 +1,26 @@
 var config = {
-  emails: "email1@email.com, email2@email.com", // Emails to send alerts to
+  emails: "david@intellibright.com", // Emails to send alerts to
   locations: [
     {
-      name: "Location1",
+      name: "Orlando",
       budget: 500, // Monthly budget for Location 1
-      campaigns: ["Location1_CampaignA", "Location1_CampaignB"] // Campaign names for Location 1
+     pattern: /Orlando/i // Regex pattern to match campaign names containing "Location1"1
     },
     {
-      name: "Location2",
-      budget: 300, // Monthly budget for Location 2
-      campaigns: ["Location2_CampaignA", "Location2_CampaignB", "Location2_CampaignC"] // Campaign names for Location 2
-    },
-    {
-      name: "Location3",
-      budget: 700, // Monthly budget for Location 3
-      campaigns: ["Location3_CampaignA", "Location3_CampaignB"] // Campaign names for Location 3
-    }
+      name: "San Francisco",
+      budget: 500, // Monthly budget for Location 2
+     pattern: /SFO/i // Regex pattern to match campaign names containing "Location1"1
+},
+      {
+      name: "Tucson",
+      budget: 250, // Monthly budget for Location 2
+      pattern: /TUC/i // Regex pattern to match campaign names containing "Location1"1]
+},
+    
     // Add more locations as needed
   ]
 };
-
-function getGoogleLocationSpend(campaignNames) {
+function getGoogleLocationSpend(locationPattern) {
   var now = new Date();
   var query = `
       SELECT 
@@ -28,7 +28,6 @@ function getGoogleLocationSpend(campaignNames) {
       metrics.cost_micros
       FROM campaign
       WHERE segments.date BETWEEN '${Utilities.formatDate(new Date(now.getFullYear(), now.getMonth(), 1), "GMT", "yyyy-MM-dd")}' AND '${Utilities.formatDate(now, "GMT", "yyyy-MM-dd")}'
-      AND campaign.name IN (${campaignNames.map(name => `'${name}'`).join(", ")})
       AND campaign.status IN ('ENABLED', 'PAUSED')
   `;
 
@@ -38,7 +37,13 @@ function getGoogleLocationSpend(campaignNames) {
   var totalLocationSpend = 0;
   while (rows.hasNext()) {
     const row = rows.next();
-    totalLocationSpend += row["metrics.cost_micros"] / 1000000; // Convert micros to currency units
+    var campaignName = row["campaign.name"];
+    var costMicros = row["metrics.cost_micros"];
+
+    // Check if the campaign name matches the location pattern
+    if (locationPattern.test(campaignName)) {
+      totalLocationSpend += costMicros / 1000000; // Convert micros to currency units
+    }
   }
   return totalLocationSpend;
 }
@@ -59,7 +64,7 @@ function main() {
 
   config.locations.forEach(function(location) {
     var expectedSpend = location.budget * expectedPercent;
-    var actualSpend = getGoogleLocationSpend(location.campaigns);
+    var actualSpend = getGoogleLocationSpend(location.pattern);
     var deviationPercent = (actualSpend - expectedSpend) / expectedSpend;
 
     // Determine location status and background color
@@ -92,7 +97,7 @@ function main() {
   });
 
   // Create HTML table for email with colored status cells
-  var emailBody = "<h2>Budget Tracking Summary</h2>";
+  var emailBody = "<h2>Location Budget Tracking Summary</h2>";
   emailBody += "<table border='1' cellpadding='5' cellspacing='0' style='border-collapse:collapse;'>";
   emailBody += "<tr><th>Location</th><th>Budget</th><th>Expected Spend</th><th>Actual Spend</th><th>Deviation</th><th>Status</th><th>Recommendation</th></tr>";
   notifications.forEach(function(notification) {
@@ -112,7 +117,7 @@ function main() {
   // Send the summary email
   MailApp.sendEmail({
     to: config.emails,
-    subject: "Daily Budget Tracking Summary",
+    subject: "Daily Location Budget Tracking Summary",
     htmlBody: emailBody
   });
 }

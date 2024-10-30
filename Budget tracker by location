@@ -1,0 +1,118 @@
+var config = {
+  emails: "email1@email.com, email2@email.com", // Emails to send alerts to
+  locations: [
+    {
+      name: "Location1",
+      budget: 500, // Monthly budget for Location 1
+      campaigns: ["Location1_CampaignA", "Location1_CampaignB"] // Campaign names for Location 1
+    },
+    {
+      name: "Location2",
+      budget: 300, // Monthly budget for Location 2
+      campaigns: ["Location2_CampaignA", "Location2_CampaignB", "Location2_CampaignC"] // Campaign names for Location 2
+    },
+    {
+      name: "Location3",
+      budget: 700, // Monthly budget for Location 3
+      campaigns: ["Location3_CampaignA", "Location3_CampaignB"] // Campaign names for Location 3
+    }
+    // Add more locations as needed
+  ]
+};
+
+function getGoogleLocationSpend(campaignNames) {
+  var now = new Date();
+  var query = `
+      SELECT 
+      campaign.name,
+      metrics.cost_micros
+      FROM campaign
+      WHERE segments.date BETWEEN '${Utilities.formatDate(new Date(now.getFullYear(), now.getMonth(), 1), "GMT", "yyyy-MM-dd")}' AND '${Utilities.formatDate(now, "GMT", "yyyy-MM-dd")}'
+      AND campaign.name IN (${campaignNames.map(name => `'${name}'`).join(", ")})
+      AND campaign.status IN ('ENABLED', 'PAUSED')
+  `;
+
+  const report = AdsApp.report(query);
+  const rows = report.rows();
+  
+  var totalLocationSpend = 0;
+  while (rows.hasNext()) {
+    const row = rows.next();
+    totalLocationSpend += row["metrics.cost_micros"] / 1000000; // Convert micros to currency units
+  }
+  return totalLocationSpend;
+}
+
+function main() {
+  var now = new Date();
+  var firstDayOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+  var daysPassed = Math.floor((now - firstDayOfMonth) / (1000 * 60 * 60 * 24));
+  var totalDaysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+
+  if (daysPassed < 7) {
+    Logger.log("Skipping email check, as fewer than 7 days have passed.");
+    return;
+  }
+
+  var expectedPercent = daysPassed / totalDaysInMonth;
+  var notifications = []; // Array to store notification details
+
+  config.locations.forEach(function(location) {
+    var expectedSpend = location.budget * expectedPercent;
+    var actualSpend = getGoogleLocationSpend(location.campaigns);
+    var deviationPercent = (actualSpend - expectedSpend) / expectedSpend;
+
+    // Determine location status and background color
+    var status, recommendation, statusColor;
+    if (deviationPercent <= -0.10) {
+      status = "Underspending";
+      recommendation = "Please raise the daily spend.";
+      statusColor = "background-color: #FFCDD2;"; // Light red for underspending
+    } else if (deviationPercent >= 0.10) {
+      status = "Overspending";
+      recommendation = "Consider decreasing the daily spend.";
+      statusColor = "background-color: #FFCDD2;"; // Light red for overspending
+    } else {
+      status = "On Track";
+      recommendation = "No adjustment needed.";
+      statusColor = "background-color: #C8E6C9;"; // Light green for on track
+    }
+
+    // Add location data to notifications array
+    notifications.push({
+      name: location.name,
+      budget: location.budget,
+      expectedSpend: expectedSpend.toFixed(2),
+      actualSpend: actualSpend.toFixed(2),
+      deviation: (deviationPercent * 100).toFixed(2) + "%",
+      status: status,
+      recommendation: recommendation,
+      statusColor: statusColor
+    });
+  });
+
+  // Create HTML table for email with colored status cells
+  var emailBody = "<h2>Budget Tracking Summary</h2>";
+  emailBody += "<table border='1' cellpadding='5' cellspacing='0' style='border-collapse:collapse;'>";
+  emailBody += "<tr><th>Location</th><th>Budget</th><th>Expected Spend</th><th>Actual Spend</th><th>Deviation</th><th>Status</th><th>Recommendation</th></tr>";
+  notifications.forEach(function(notification) {
+    emailBody += "<tr>";
+    emailBody += `<td>${notification.name}</td>`;
+    emailBody += `<td>${notification.budget}</td>`;
+    emailBody += `<td>${notification.expectedSpend}</td>`;
+    emailBody += `<td>${notification.actualSpend}</td>`;
+    emailBody += `<td>${notification.deviation}</td>`;
+    // Apply the background color to the status cell
+    emailBody += `<td style="${notification.statusColor}">${notification.status}</td>`;
+    emailBody += `<td>${notification.recommendation}</td>`;
+    emailBody += "</tr>";
+  });
+  emailBody += "</table>";
+
+  // Send the summary email
+  MailApp.sendEmail({
+    to: config.emails,
+    subject: "Daily Budget Tracking Summary",
+    htmlBody: emailBody
+  });
+}

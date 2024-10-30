@@ -1,0 +1,123 @@
+var config = {
+  emails: "email1@email.com, email2@email.com", // Emails to send alerts to
+  services: [
+    {
+      name: "Windows",
+      budget: 800, // Monthly budget for Windows
+      pattern: /Windows/i // Regex pattern to match campaign names containing "Windows"
+    },
+    {
+      name: "Roofing",
+      budget: 500, // Monthly budget for Roofing
+      pattern: /Roofing/i // Regex pattern to match campaign names containing "Roofing"
+    },
+    {
+      name: "Doors",
+      budget: 600, // Monthly budget for Doors
+      pattern: /Doors/i // Regex pattern to match campaign names containing "Doors"
+    }
+    // Add more services as needed
+  ]
+};
+
+function getGoogleServiceSpend(servicePattern) {
+  var now = new Date();
+  var query = `
+      SELECT 
+      campaign.name,
+      metrics.cost_micros
+      FROM campaign
+      WHERE segments.date BETWEEN '${Utilities.formatDate(new Date(now.getFullYear(), now.getMonth(), 1), "GMT", "yyyy-MM-dd")}' AND '${Utilities.formatDate(now, "GMT", "yyyy-MM-dd")}'
+      AND campaign.status IN ('ENABLED', 'PAUSED')
+  `;
+
+  const report = AdsApp.report(query);
+  const rows = report.rows();
+  
+  var totalServiceSpend = 0;
+  while (rows.hasNext()) {
+    const row = rows.next();
+    var campaignName = row["campaign.name"];
+    var costMicros = row["metrics.cost_micros"];
+
+    // Check if the campaign name matches the service pattern
+    if (servicePattern.test(campaignName)) {
+      totalServiceSpend += costMicros / 1000000; // Convert micros to currency units
+    }
+  }
+  return totalServiceSpend;
+}
+
+function main() {
+  var now = new Date();
+  var firstDayOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+  var daysPassed = Math.floor((now - firstDayOfMonth) / (1000 * 60 * 60 * 24));
+  var totalDaysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+
+  if (daysPassed < 7) {
+    Logger.log("Skipping email check, as fewer than 7 days have passed.");
+    return;
+  }
+
+  var expectedPercent = daysPassed / totalDaysInMonth;
+  var notifications = []; // Array to store notification details
+
+  config.services.forEach(function(service) {
+    var expectedSpend = service.budget * expectedPercent;
+    var actualSpend = getGoogleServiceSpend(service.pattern);
+    var deviationPercent = (actualSpend - expectedSpend) / expectedSpend;
+
+    // Determine service status and background color
+    var status, recommendation, statusColor;
+    if (deviationPercent <= -0.10) {
+      status = "Underspending";
+      recommendation = "Please raise the daily spend.";
+      statusColor = "background-color: #FFCDD2;"; // Light red for underspending
+    } else if (deviationPercent >= 0.10) {
+      status = "Overspending";
+      recommendation = "Consider decreasing the daily spend.";
+      statusColor = "background-color: #FFCDD2;"; // Light red for overspending
+    } else {
+      status = "On Track";
+      recommendation = "No adjustment needed.";
+      statusColor = "background-color: #C8E6C9;"; // Light green for on track
+    }
+
+    // Add service data to notifications array
+    notifications.push({
+      name: service.name,
+      budget: service.budget,
+      expectedSpend: expectedSpend.toFixed(2),
+      actualSpend: actualSpend.toFixed(2),
+      deviation: (deviationPercent * 100).toFixed(2) + "%",
+      status: status,
+      recommendation: recommendation,
+      statusColor: statusColor
+    });
+  });
+
+  // Create HTML table for email with colored status cells
+  var emailBody = "<h2>Service Budget Tracking Summary</h2>";
+  emailBody += "<table border='1' cellpadding='5' cellspacing='0' style='border-collapse:collapse;'>";
+  emailBody += "<tr><th>Service Type</th><th>Budget</th><th>Expected Spend</th><th>Actual Spend</th><th>Deviation</th><th>Status</th><th>Recommendation</th></tr>";
+  notifications.forEach(function(notification) {
+    emailBody += "<tr>";
+    emailBody += `<td>${notification.name}</td>`;
+    emailBody += `<td>${notification.budget}</td>`;
+    emailBody += `<td>${notification.expectedSpend}</td>`;
+    emailBody += `<td>${notification.actualSpend}</td>`;
+    emailBody += `<td>${notification.deviation}</td>`;
+    // Apply the background color to the status cell
+    emailBody += `<td style="${notification.statusColor}">${notification.status}</td>`;
+    emailBody += `<td>${notification.recommendation}</td>`;
+    emailBody += "</tr>";
+  });
+  emailBody += "</table>";
+
+  // Send the summary email
+  MailApp.sendEmail({
+    to: config.emails,
+    subject: "Daily Service Budget Tracking Summary",
+    htmlBody: emailBody
+  });
+}

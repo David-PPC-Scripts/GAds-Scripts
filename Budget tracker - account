@@ -1,0 +1,82 @@
+var config = {
+  budget: 1000, // Monthly budget
+  emails: "email1@email.com, email2@email.com", // Emails to send alerts to
+};
+
+function main() {
+  var now = new Date();
+  var firstDayOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+  var daysPassed = Math.floor((now - firstDayOfMonth) / (1000 * 60 * 60 * 24)); // Number of full days passed until today
+  var totalDaysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+
+  // Only start sending emails after the 7th day of the month
+  if (daysPassed < 7) {
+    Logger.log("Skipping email check, as fewer than 7 days have passed.");
+    return; // Exit the function early
+  }
+
+  // Expected pacing based on the number of days passed in the month
+  var expectedPercent = daysPassed / totalDaysInMonth;
+  var expectedSpend = config.budget * expectedPercent;
+  
+  var account = AdsApp.currentAccount().getName();
+  var currency = AdsApp.currentAccount().getCurrencyCode();
+  var accountId = AdsApp.currentAccount().getCustomerId();
+
+  // Retrieve account-level spend data
+  var query = `
+      SELECT 
+      metrics.cost_micros
+      FROM customer
+      WHERE segments.date BETWEEN '${Utilities.formatDate(new Date(now.getFullYear(), now.getMonth(), 1), "GMT", "yyyy-MM-dd")}' AND '${Utilities.formatDate(now, "GMT", "yyyy-MM-dd")}'
+  `;
+  
+  const report = AdsApp.report(query);
+  const rows = report.rows();
+  
+  var totalSpendToDate = 0;
+  while (rows.hasNext()) {
+    const row = rows.next();
+    var costMicros = row["metrics.cost_micros"];
+    
+    // Convert micros to currency units (e.g., dollars or euros)
+    totalSpendToDate += costMicros / 1000000;
+  }
+
+  // Check if the actual spend deviates by 10% or more from the expected spend
+  var deviationPercent = (totalSpendToDate - expectedSpend) / expectedSpend;
+
+  var subject;
+  var emailBody;
+
+  if (deviationPercent <= -0.10) {
+    // Underspending case
+    subject = `${account} Budget Alert: You are underspending by ${Math.abs(deviationPercent * 100).toFixed(2)}%`;
+    emailBody = `
+      Your account ${account} is underspending by ${Math.abs(deviationPercent * 100).toFixed(2)}% compared to the expected budget pacing.
+      <p>Expected Spend: ${currency} ${expectedSpend.toFixed(2)}</p>
+      <p>Actual Spend: ${currency} ${totalSpendToDate.toFixed(2)}</p>
+      <p>Monthly Budget: ${currency} ${config.budget}</p>
+      <p>You are underspending. Please make sure to raise the daily spend to meet your budget goals.</p>
+    `;
+  } else if (deviationPercent >= 0.10) {
+    // Overspending case
+    subject = `${account} Budget Alert: You are overspending by ${Math.abs(deviationPercent * 100).toFixed(2)}%`;
+    emailBody = `
+      Your account ${account} is overspending by ${Math.abs(deviationPercent * 100).toFixed(2)}% compared to the expected budget pacing.
+      <p>Expected Spend: ${currency} ${expectedSpend.toFixed(2)}</p>
+      <p>Actual Spend: ${currency} ${totalSpendToDate.toFixed(2)}</p>
+      <p>Monthly Budget: ${currency} ${config.budget}</p>
+      <p>You are overspending. Start decreasing daily spend to meet the budget goal.</p>
+    `;
+  }
+
+  // Only send an email if the deviation is greater than 10% (either underspending or overspending)
+  if (Math.abs(deviationPercent) >= 0.10) {
+    MailApp.sendEmail({
+      to: config.emails,
+      subject: subject,
+      htmlBody: emailBody,
+    });
+  }
+}

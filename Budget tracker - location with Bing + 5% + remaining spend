@@ -1,0 +1,150 @@
+var config = {
+  emails: "email1@email.com, email2@email.com", // Emails to send alerts to
+  microsoftSheetURL: "YOUR_GOOGLE_SHEET_URL", // Link to the Google Sheet with Microsoft spend data
+  microsoftSheetName: "Sheet1", // Name of the sheet where Microsoft data is stored
+  microsoftDataRange: "A2:B", // Range where Microsoft campaign data is stored
+  locations: [
+    { name: "AUS", budget: 500, pattern: /AUS/i },
+    { name: "CBD", budget: 500, pattern: /CBD/i },
+    { name: "DFW", budget: 500, pattern: /DFW/i },
+    { name: "FLL", budget: 500, pattern: /FLL/i },
+    { name: "HOU", budget: 500, pattern: /HOU/i },
+    { name: "LAN", budget: 500, pattern: /LAN/i },
+    { name: "LVS", budget: 500, pattern: /LVS/i },
+    { name: "OAK", budget: 500, pattern: /OAK/i },
+    { name: "ORA", budget: 500, pattern: /ORA/i },
+    { name: "ORL", budget: 500, pattern: /ORL/i },
+    { name: "PDX", budget: 500, pattern: /PDX/i },
+    { name: "PHX", budget: 500, pattern: /PHX/i },
+    { name: "PSP", budget: 500, pattern: /PSP/i },
+    { name: "RVS", budget: 500, pattern: /RVS/i },
+    { name: "SAC", budget: 500, pattern: /SAC/i },
+    { name: "SAN", budget: 500, pattern: /SAN/i },
+    { name: "SEA", budget: 500, pattern: /SEA/i },
+    { name: "SFO", budget: 500, pattern: /SFO/i },
+    { name: "SPO", budget: 500, pattern: /SPO/i },
+    { name: "TAC", budget: 500, pattern: /TAC/i },
+    { name: "TLH", budget: 500, pattern: /TLH/i },
+    { name: "TPA", budget: 500, pattern: /TPA/i },
+    { name: "TUC", budget: 500, pattern: /TUC/i }
+  ]
+};
+
+function getGoogleLocationSpend(googlePattern) {
+  var now = new Date();
+  var query = `
+      SELECT 
+      campaign.name,
+      metrics.cost_micros
+      FROM campaign
+      WHERE segments.date BETWEEN '${Utilities.formatDate(new Date(now.getFullYear(), now.getMonth(), 1), "GMT", "yyyy-MM-dd")}' AND '${Utilities.formatDate(now, "GMT", "yyyy-MM-dd")}'
+      AND campaign.status IN ('ENABLED', 'PAUSED')
+  `;
+
+  try {
+    const report = AdsApp.report(query);
+    const rows = report.rows();
+    
+    var totalLocationSpend = 0;
+    while (rows.hasNext()) {
+      const row = rows.next();
+      var campaignName = row["campaign.name"];
+      var costMicros = row["metrics.cost_micros"];
+
+      if (googlePattern.test(campaignName)) {
+        totalLocationSpend += costMicros / 1000000; // Convert micros to currency units
+      }
+    }
+    return totalLocationSpend;
+  } catch (e) {
+    Logger.log("Error in getGoogleLocationSpend: " + e.message);
+    return 0;
+  }
+}
+
+function getMicrosoftLocationSpend(microsoftPattern) {
+  var sheet = SpreadsheetApp.openByUrl(config.microsoftSheetURL).getSheetByName(config.microsoftSheetName);
+  var data = sheet.getRange(config.microsoftDataRange).getValues();
+
+  var matchedSpend = data
+    .filter(row => microsoftPattern.test(row[0]))
+    .reduce((sum, row) => sum + (parseFloat(row[1]) || 0), 0);
+
+  return matchedSpend;
+}
+
+function main() {
+  var now = new Date();
+  var firstDayOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+  var lastDayOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+  var daysPassed = Math.floor((now - firstDayOfMonth) / (1000 * 60 * 60 * 24)) + 1;
+  var remainingDays = Math.floor((lastDayOfMonth - now) / (1000 * 60 * 60 * 24));
+
+  if (daysPassed < 7) {
+    Logger.log("Skipping email check, as fewer than 7 days have passed.");
+    return;
+  }
+
+  var expectedPercent = daysPassed / (daysPassed + remainingDays);
+  var notifications = [];
+
+  config.locations.forEach(function(location) {
+    var pattern = location.pattern || /.*/;
+
+    var expectedSpend = location.budget * expectedPercent;
+    var googleSpend = getGoogleLocationSpend(pattern);
+    var microsoftSpend = getMicrosoftLocationSpend(pattern);
+    var actualSpend = googleSpend + microsoftSpend;
+    var remainingBudget = location.budget - actualSpend;
+    var remainingSpendPerDay = remainingDays > 0 ? remainingBudget / remainingDays : 0;
+    var deviationPercent = (actualSpend - expectedSpend) / expectedSpend;
+
+    var status, recommendation, statusColor;
+    if (deviationPercent <= -0.05) {
+      status = "Underspending";
+      recommendation = `Raise the daily spend to ${remainingSpendPerDay.toFixed(2)}.`;
+      statusColor = "background-color: #FFCDD2;";
+    } else if (deviationPercent >= 0.05) {
+      status = "Overspending";
+      recommendation = `Lower the daily spend to ${remainingSpendPerDay.toFixed(2)}.`;
+      statusColor = "background-color: #FFCDD2;";
+    } else {
+      status = "On Track";
+      recommendation = `Maintain daily spend at ${remainingSpendPerDay.toFixed(2)}.`;
+      statusColor = "background-color: #C8E6C9;";
+    }
+
+    notifications.push({
+      name: location.name,
+      budget: location.budget,
+      expectedSpend: expectedSpend.toFixed(2),
+      actualSpend: actualSpend.toFixed(2),
+      deviation: (deviationPercent * 100).toFixed(2) + "%",
+      status: status,
+      recommendation: recommendation,
+      statusColor: statusColor
+    });
+  });
+
+  var emailBody = "<h2>Location Budget Tracking Summary</h2>";
+  emailBody += "<table border='1' cellpadding='5' cellspacing='0' style='border-collapse:collapse;'>";
+  emailBody += "<tr><th>Location</th><th>Budget</th><th>Expected Spend</th><th>Actual Spend</th><th>Deviation</th><th>Status</th><th>Recommendation</th></tr>";
+  notifications.forEach(function(notification) {
+    emailBody += "<tr>";
+    emailBody += `<td>${notification.name}</td>`;
+    emailBody += `<td>${notification.budget}</td>`;
+    emailBody += `<td>${notification.expectedSpend}</td>`;
+    emailBody += `<td>${notification.actualSpend}</td>`;
+    emailBody += `<td>${notification.deviation}</td>`;
+    emailBody += `<td style="${notification.statusColor}">${notification.status}</td>`;
+    emailBody += `<td>${notification.recommendation}</td>`;
+    emailBody += "</tr>";
+  });
+  emailBody += "</table>";
+
+  MailApp.sendEmail({
+    to: config.emails,
+    subject: "Daily Location Budget Tracking Summary",
+    htmlBody: emailBody
+  });
+}

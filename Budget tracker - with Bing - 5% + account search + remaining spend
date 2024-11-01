@@ -1,7 +1,7 @@
 var config = {
   budget: 3200, // Monthly budget
-  emails: "your email address", // Emails to send alerts to
-  microsoftSheetURL: "your google sheet link", // Link to the Google Sheet with Microsoft spend data
+  emails: "david@intellibright.com", // Emails to send alerts to
+  microsoftSheetURL: "https://docs.google.com/spreadsheets/d/1FtJGvVqh2BAgJ_z-lr7Gb2S3XfHP-fGRtiq4uV6jCiw/edit?usp=sharing", // Link to the Google Sheet with Microsoft spend data
   microsoftSheetName: "Sheet1", // Name of the sheet where Microsoft data is stored
   microsoftAccountPattern: /YourAccountName/i // Regex pattern to match the Microsoft account name in Column A
 };

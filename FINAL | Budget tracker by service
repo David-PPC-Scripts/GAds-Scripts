@@ -1,0 +1,121 @@
+var config = {
+  emails: "@intellibright.com", // Emails to send alerts to
+  services: [
+    { name: "Windows", budget: 800, pattern: /Windows/i },
+    { name: "Roofing", budget: 500, pattern: /Roofing/i },
+    { name: "Doors", budget: 600, pattern: /Doors/i }
+  ]
+};
+
+function getGoogleServiceSpend(servicePattern) {
+  var now = new Date();
+  var query = `
+      SELECT 
+      campaign.name,
+      metrics.cost_micros
+      FROM campaign
+      WHERE segments.date BETWEEN '${Utilities.formatDate(new Date(now.getFullYear(), now.getMonth(), 1), "GMT", "yyyy-MM-dd")}' AND '${Utilities.formatDate(now, "GMT", "yyyy-MM-dd")}'
+      AND campaign.status IN ('ENABLED', 'PAUSED')
+  `;
+
+  const report = AdsApp.report(query);
+  const rows = report.rows();
+  
+  var totalServiceSpend = 0;
+  while (rows.hasNext()) {
+    const row = rows.next();
+    var campaignName = row["campaign.name"];
+    var costMicros = row["metrics.cost_micros"];
+    if (servicePattern.test(campaignName)) {
+      totalServiceSpend += costMicros / 1000000; // Convert micros to currency units
+    }
+  }
+  return totalServiceSpend;
+}
+
+// Helper function to count weekdays from a start date to an end date
+function getRemainingWeekdays(startDate, endDate) {
+  let count = 0;
+  let date = new Date(startDate);
+  while (date <= endDate) {
+    const dayOfWeek = date.getDay();
+    if (dayOfWeek !== 0 && dayOfWeek !== 6) { // Exclude weekends (Sunday=0, Saturday=6)
+      count++;
+    }
+    date.setDate(date.getDate() + 1);
+  }
+  return count;
+}
+
+function main() {
+  var now = new Date();
+  var firstDayOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+  var lastDayOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+  var daysPassed = Math.floor((now - firstDayOfMonth) / (1000 * 60 * 60 * 24)) + 1; // Including weekends
+  var remainingWeekdays = getRemainingWeekdays(now, lastDayOfMonth);
+
+  if (daysPassed < 5) {
+    Logger.log("Skipping email check, as fewer than 5 days have passed.");
+    return;
+  }
+
+  var expectedPercent = daysPassed / (daysPassed + remainingWeekdays);
+  var notifications = [];
+
+  config.services.forEach(function(service) {
+    var expectedSpend = service.budget * expectedPercent;
+    var actualSpend = getGoogleServiceSpend(service.pattern);
+    var remainingBudget = service.budget - actualSpend;
+    var remainingSpendPerDay = remainingWeekdays > 0 ? remainingBudget / remainingWeekdays : 0;
+    var deviationPercent = (actualSpend - expectedSpend) / expectedSpend;
+
+    var status, recommendation, statusColor;
+    if (deviationPercent <= -0.05) {
+      status = "Underspending";
+      recommendation = `Raise the daily spend to USD ${Math.floor(remainingSpendPerDay)}.`;
+      statusColor = "background-color: #FFCDD2;"; // Light red for underspending
+    } else if (deviationPercent >= 0.05) {
+      status = "Overspending";
+      recommendation = `Lower the daily spend to USD ${Math.floor(remainingSpendPerDay)}.`;
+      statusColor = "background-color: #FFCDD2;"; // Light red for overspending
+    } else {
+      status = "On Track";
+      recommendation = `Maintain daily spend at USD ${Math.floor(remainingSpendPerDay)}.`;
+      statusColor = "background-color: #C8E6C9;"; // Light green for on track
+    }
+
+    notifications.push({
+      name: service.name,
+      budget: `USD ${Math.floor(service.budget)}`,
+      expectedSpend: `USD ${Math.floor(expectedSpend)}`,
+      actualSpend: `USD ${Math.floor(actualSpend)}`,
+      deviation: `${(deviationPercent * 100).toFixed(2)}%`,
+      status: status,
+      recommendation: recommendation,
+      statusColor: statusColor
+    });
+  });
+
+  // Create HTML table for email with colored status cells
+  var emailBody = "<h2>Service Budget Tracking Summary</h2>";
+  emailBody += "<table border='1' cellpadding='5' cellspacing='0' style='border-collapse:collapse; width: 100%;'>";
+  emailBody += "<tr><th style='text-align: center;'>Service Type</th><th style='text-align: center;'>Budget</th><th style='text-align: center;'>Expected Spend</th><th style='text-align: center;'>Actual Spend</th><th style='text-align: center;'>Deviation</th><th style='text-align: center;'>Status</th><th style='text-align: center;'>Recommendation</th></tr>";
+  notifications.forEach(function(notification) {
+    emailBody += "<tr>";
+    emailBody += `<td style="text-align: center;">${notification.name}</td>`;
+    emailBody += `<td style="text-align: center;">${notification.budget}</td>`;
+    emailBody += `<td style="text-align: center;">${notification.expectedSpend}</td>`;
+    emailBody += `<td style="text-align: center;">${notification.actualSpend}</td>`;
+    emailBody += `<td style="text-align: center;">${notification.deviation}</td>`;
+    emailBody += `<td style="text-align: center; ${notification.statusColor}">${notification.status}</td>`;
+    emailBody += `<td style="text-align: center;">${notification.recommendation}</td>`;
+    emailBody += "</tr>";
+  });
+  emailBody += "</table>";
+
+  MailApp.sendEmail({
+    to: config.emails,
+    subject: "Daily Service Budget Tracking Summary",
+    htmlBody: emailBody
+  });
+}

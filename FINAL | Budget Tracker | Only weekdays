@@ -1,0 +1,141 @@
+var config = {
+  budget: 9000, // Monthly budget
+  emails: "david@intellibright.com", // Emails to send alerts to
+  microsoftSheetURL: "https://docs.google.com/spreadsheets/d/1FtJGvVqh2BAgJ_z-lr7Gb2S3XfHP-fGRtiq4uV6jCiw/edit?usp=sharing", // Link to the Google Sheet with Microsoft spend data
+  microsoftSheetName: "Sheet1", // Name of the sheet where Microsoft data is stored
+  microsoftAccountPattern: /Card/i // Regex pattern to match the Microsoft account name in Column A
+};
+
+function getGoogleSpend() {
+  var now = new Date();
+  var query = `
+      SELECT 
+      metrics.cost_micros
+      FROM customer
+      WHERE segments.date BETWEEN '${Utilities.formatDate(new Date(now.getFullYear(), now.getMonth(), 1), "GMT", "yyyy-MM-dd")}' AND '${Utilities.formatDate(now, "GMT", "yyyy-MM-dd")}'
+  `;
+  
+  const report = AdsApp.report(query);
+  const rows = report.rows();
+  
+  var googleSpend = 0;
+  while (rows.hasNext()) {
+    const row = rows.next();
+    googleSpend += row["metrics.cost_micros"] / 1000000; // Convert micros to currency units
+  }
+  return googleSpend;
+}
+
+function getMicrosoftSpend() {
+  var sheet = SpreadsheetApp.openByUrl(config.microsoftSheetURL).getSheetByName(config.microsoftSheetName);
+  var data = sheet.getRange("A2:B").getValues();
+
+  var matchedSpend = data
+    .filter(row => config.microsoftAccountPattern.test(row[0]))
+    .reduce((sum, row) => sum + (parseFloat(row[1]) || 0), 0);
+
+  return matchedSpend;
+}
+
+// Function to count weekdays only
+function getRemainingWeekdays(startDate, endDate) {
+  let count = 0;
+  let date = new Date(startDate);
+  
+  while (date <= endDate) {
+    const dayOfWeek = date.getDay();
+    if (dayOfWeek !== 0 && dayOfWeek !== 6) { // Exclude weekends (Sunday=0, Saturday=6)
+      count++;
+    }
+    date.setDate(date.getDate() + 1);
+  }
+  return count;
+}
+
+function main() {
+  var now = new Date();
+  var firstDayOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+  var lastDayOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+  var daysPassed = Math.floor((now - firstDayOfMonth) / (1000 * 60 * 60 * 24)) + 1; // Including weekends
+  var remainingWeekdays = getRemainingWeekdays(now, lastDayOfMonth);
+
+  if (daysPassed < 5) {
+    Logger.log("Skipping email check, as fewer than 5 days have passed.");
+    return;
+  }
+
+  // Calculate expected spend based on total days passed (including weekends)
+  var expectedPercent = daysPassed / Math.floor((lastDayOfMonth - firstDayOfMonth) / (1000 * 60 * 60 * 24) + 1);
+  var expectedSpend = config.budget * expectedPercent;
+  
+  var googleSpend = getGoogleSpend();
+  var microsoftSpend = getMicrosoftSpend();
+  
+  var totalSpendToDate = googleSpend + microsoftSpend;
+  var remainingBudget = config.budget - totalSpendToDate;
+  var remainingSpendPerDay = remainingWeekdays > 0 ? remainingBudget / remainingWeekdays : 0;
+
+  var deviationPercent = (totalSpendToDate - expectedSpend) / expectedSpend;
+  var account = AdsApp.currentAccount().getName();
+  var currency = AdsApp.currentAccount().getCurrencyCode();
+
+  var subject, emailBody;
+
+  // Creating a refined table for email output
+  emailBody = `
+    <h2>Budget Tracking Summary for ${account}</h2>
+    <table border="1" cellpadding="8" cellspacing="0" style="border-collapse: collapse; width: 100%;">
+      <tr style="background-color: #f2f2f2;">
+        <th>Metric</th>
+        <th style="text-align: center;">Value</th>
+      </tr>
+      <tr>
+        <td><strong>Monthly Budget</strong></td>
+        <td style="text-align: center;">${currency} ${Math.floor(config.budget)}</td>
+      </tr>
+      <tr>
+        <td><strong>Expected Spend (to date)</strong></td>
+        <td style="text-align: center;">${currency} ${Math.floor(expectedSpend)}</td>
+      </tr>
+      <tr>
+        <td><strong>Actual Spend (Google + Microsoft)</strong></td>
+        <td style="text-align: center;">${currency} ${Math.floor(totalSpendToDate)}</td>
+      </tr>
+      <tr>
+        <td><strong>Deviation from Expected Spend</strong></td>
+        <td style="text-align: center;">${(deviationPercent * 100).toFixed(2)}%</td>
+      </tr>
+      <tr>
+        <td><strong>Remaining Budget</strong></td>
+        <td style="text-align: center;">${currency} ${Math.floor(remainingBudget)}</td>
+      </tr>
+      <tr>
+        <td><strong>Remaining Weekdays</strong></td>
+        <td style="text-align: center;">${remainingWeekdays} days</td>
+      </tr>
+      <tr>
+        <td><strong>Recommended Daily Spend (to meet budget)</strong></td>
+        <td style="text-align: center;">${currency} ${Math.floor(remainingSpendPerDay)}</td>
+      </tr>
+    </table>
+  `;
+  
+  if (deviationPercent <= -0.05) {
+    subject = `${account} Budget Alert: You are underspending by ${Math.abs(deviationPercent * 100).toFixed(2)}%`;
+    emailBody += `<p style="color: #FF4500;">You are underspending. Please consider raising the daily spend to ${currency} ${Math.floor(remainingSpendPerDay)} to meet your budget goals.</p>`;
+  } else if (deviationPercent >= 0.05) {
+    subject = `${account} Budget Alert: You are overspending by ${Math.abs(deviationPercent * 100).toFixed(2)}%`;
+    emailBody += `<p style="color: #FF4500;">You are overspending. Consider decreasing the daily spend to ${currency} ${Math.floor(remainingSpendPerDay)} to stay within the budget.</p>`;
+  } else {
+    subject = `${account} Budget Status: On Track`;
+    emailBody += `<p style="color: #32CD32;">Your spending is on track. Keep monitoring your daily spend to stay on budget.</p>`;
+  }
+
+  if (Math.abs(deviationPercent) >= 0.05) {
+    MailApp.sendEmail({
+      to: config.emails,
+      subject: subject,
+      htmlBody: emailBody,
+    });
+  }
+}

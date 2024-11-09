@@ -1,0 +1,162 @@
+var config = {
+  emails: "david@intellibright.com", // Emails to send alerts to
+  microsoftSheetURL: "https://docs.google.com/spreadsheets/d/1_KAwZJ94MGmE_NJlH9ypVqVaQPsqYyTa3i6qyfdGvfE/edit?usp=sharing", // Link to the Google Sheet with Microsoft spend data
+  microsoftSheetName: "Sheet1", // Name of the sheet where Microsoft data is stored
+  microsoftDataRange: "A2:B", // Range where Microsoft campaign data is stored
+  locations: [
+    { name: "AUS", budget: 1750, pattern: /AUS/i },
+    { name: "CBD", budget: 1500, pattern: /CBD/i },
+    { name: "DFW", budget: 1500, pattern: /DFW/i },
+    { name: "FLL", budget: 500, pattern: /FLL/i },
+    { name: "HOU", budget: 2000, pattern: /HOUSTON/i },
+    { name: "LAN", budget: 2000, pattern: /ANGEL/i },
+    { name: "LVS", budget: 1000, pattern: /LVS/i },
+    { name: "OAK", budget: 500, pattern: /OAK/i },
+    { name: "ORA", budget: 8000, pattern: /ORA/i },
+    { name: "ORL", budget: 500, pattern: /ORL/i },
+    { name: "PDX", budget: 3750, pattern: /PDX/i },
+    { name: "PHX", budget: 5000, pattern: /PHX/i },
+    { name: "PSP", budget: 2000, pattern: /PSP/i },
+    { name: "RVS", budget: 3250, pattern: /RVS/i },
+    { name: "SAC", budget: 3500, pattern: /SAC/i },
+    { name: "SAN", budget: 1950, pattern: /DIEGO/i },
+    { name: "SEA", budget: 1500, pattern: /SEA/i },
+    { name: "SFO", budget: 500, pattern: /SFO/i },
+    { name: "SPO", budget: 1750, pattern: /SPO/i },
+    { name: "TAC", budget: 2000, pattern: /TAC/i },
+    { name: "TLH", budget: 500, pattern: /TLH/i },
+    { name: "TPA", budget: 500, pattern: /TPA/i },
+    { name: "TUC", budget: 2000, pattern: /TUC/i }
+  ]
+};
+
+function getGoogleLocationSpend(googlePattern) {
+  var now = new Date();
+  var query = `
+      SELECT 
+      campaign.name,
+      metrics.cost_micros
+      FROM campaign
+      WHERE segments.date BETWEEN '${Utilities.formatDate(new Date(now.getFullYear(), now.getMonth(), 1), "GMT", "yyyy-MM-dd")}' AND '${Utilities.formatDate(now, "GMT", "yyyy-MM-dd")}'
+      AND campaign.status IN ('ENABLED', 'PAUSED')
+  `;
+
+  try {
+    const report = AdsApp.report(query);
+    const rows = report.rows();
+    
+    var totalLocationSpend = 0;
+    while (rows.hasNext()) {
+      const row = rows.next();
+      var campaignName = row["campaign.name"];
+      var costMicros = row["metrics.cost_micros"];
+
+      if (googlePattern.test(campaignName)) {
+        totalLocationSpend += costMicros / 1000000; // Convert micros to currency units
+      }
+    }
+    return totalLocationSpend;
+  } catch (e) {
+    Logger.log("Error in getGoogleLocationSpend: " + e.message);
+    return 0;
+  }
+}
+
+function getMicrosoftLocationSpend(microsoftPattern) {
+  var sheet = SpreadsheetApp.openByUrl(config.microsoftSheetURL).getSheetByName(config.microsoftSheetName);
+  var data = sheet.getRange(config.microsoftDataRange).getValues();
+
+  var matchedSpend = data
+    .filter(row => microsoftPattern.test(row[0]))
+    .reduce((sum, row) => sum + (parseFloat(row[1]) || 0), 0);
+
+  return matchedSpend;
+}
+
+// Function to count weekdays only
+function getRemainingWeekdays(startDate, endDate) {
+  let count = 0;
+  let date = new Date(startDate);
+  
+  while (date <= endDate) {
+    const dayOfWeek = date.getDay();
+    if (dayOfWeek !== 0 && dayOfWeek !== 6) { // Exclude weekends (Sunday=0, Saturday=6)
+      count++;
+    }
+    date.setDate(date.getDate() + 1);
+  }
+  return count;
+}
+
+function main() {
+  var now = new Date();
+  var firstDayOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+  var lastDayOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+  var daysPassed = Math.floor((now - firstDayOfMonth) / (1000 * 60 * 60 * 24)) + 1; // Including weekends
+  var remainingWeekdays = getRemainingWeekdays(now, lastDayOfMonth);
+  var notifications = [];
+
+  config.locations.forEach(function(location) {
+    var pattern = location.pattern || /.*/;
+    var expectedPercent = daysPassed / Math.floor((lastDayOfMonth - firstDayOfMonth) / (1000 * 60 * 60 * 24) + 1);
+    var expectedSpend = location.budget * expectedPercent;
+    
+    var googleSpend = getGoogleLocationSpend(pattern);
+    var microsoftSpend = getMicrosoftLocationSpend(pattern);
+    var actualSpend = googleSpend + microsoftSpend;
+    var remainingBudget = location.budget - actualSpend;
+    var remainingSpendPerDay = remainingWeekdays > 0 ? remainingBudget / remainingWeekdays : 0;
+    var deviationPercent = (actualSpend - expectedSpend) / expectedSpend;
+
+    var status, recommendation, statusColor;
+    if (deviationPercent <= -0.05) {
+      status = "Underspending";
+      recommendation = `Raise the daily spend to ${remainingSpendPerDay.toFixed(2)}.`;
+      statusColor = "background-color: #FFCDD2;"; // Light red
+    } else if (deviationPercent >= 0.05) {
+      status = "Overspending";
+      recommendation = `Lower the daily spend to ${remainingSpendPerDay.toFixed(2)}.`;
+      statusColor = "background-color: #FFCDD2;"; // Light red
+    } else {
+      status = "On Track";
+      recommendation = `Maintain daily spend at ${remainingSpendPerDay.toFixed(2)}.`;
+      statusColor = "background-color: #C8E6C9;"; // Light green
+    }
+
+    notifications.push({
+      name: location.name,
+      budget: location.budget,
+      expectedSpend: expectedSpend.toFixed(2),
+      actualSpend: actualSpend.toFixed(2),
+      deviation: (deviationPercent * 100).toFixed(2) + "%",
+      status: status,
+      recommendation: recommendation,
+      statusColor: statusColor
+    });
+  });
+
+var emailBody = "<h2>Location Budget Tracking Summary</h2>";
+emailBody += "<table border='1' cellpadding='5' cellspacing='0' style='border-collapse:collapse; width: 100%;'>";
+emailBody += "<tr><th style='text-align: center;'>Location</th><th style='text-align: center;'>Budget</th><th style='text-align: center;'>Expected Spend</th><th style='text-align: center;'>Actual Spend</th><th style='text-align: center;'>Deviation</th><th style='text-align: center;'>Status</th><th style='text-align: center;'>Recommendation</th></tr>";
+
+notifications.forEach(function(notification) {
+  emailBody += "<tr>";
+  emailBody += `<td style="text-align: center;">${notification.name}</td>`;
+  emailBody += `<td style="text-align: center;">USD ${Math.floor(notification.budget)}</td>`;
+  emailBody += `<td style="text-align: center;">USD ${Math.floor(notification.expectedSpend)}</td>`;
+  emailBody += `<td style="text-align: center;">USD ${Math.floor(notification.actualSpend)}</td>`;
+  emailBody += `<td style="text-align: center;">${notification.deviation}</td>`;
+  emailBody += `<td style="text-align: center; ${notification.statusColor}">${notification.status}</td>`;
+  emailBody += `<td style="text-align: center;">${notification.recommendation}</td>`;
+  emailBody += "</tr>";
+});
+emailBody += "</table>";
+
+
+
+  MailApp.sendEmail({
+    to: config.emails,
+    subject: "Daily Location Budget Tracking Summary",
+    htmlBody: emailBody
+  });
+}

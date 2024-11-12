@@ -1,6 +1,6 @@
 var config = {
-  budget: 4172, // Monthly budget
-  emails: "david@intellibright.com" // Emails to send alerts to
+  budget: Your budget, // Monthly budget
+  emails: "Your Email Address" // Emails to send alerts to
 };
 
 function main() {

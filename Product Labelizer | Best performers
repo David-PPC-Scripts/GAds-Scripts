@@ -1,0 +1,90 @@
+var SPREADSHEET_URL = "YOUR SHEET URL";
+var ROAS_THRESHOLD = 7.5;
+var COST_LIMIT = 20;
+
+function main() {
+  var products = getBestPerformingProducts(60, ROAS_THRESHOLD);
+  pushToSpreadsheet(products, SPREADSHEET_URL, "Best Performing");
+}
+
+function getBestPerformingProducts(daysAgo, roasThreshold) {
+  var data = fetchProductMetrics(daysAgo);
+  return data.filter(row => row.roas >= roasThreshold && row.conversions >= 1 && row.cost >= COST_LIMIT);
+}
+
+function fetchProductMetrics(daysAgo) {
+  var today = new Date();
+  var startDate = new Date(today.getTime() - daysAgo * 24 * 60 * 60 * 1000);
+  var dateFrom = Utilities.formatDate(startDate, AdWordsApp.currentAccount().getTimeZone(), "yyyyMMdd");
+  var dateTo = Utilities.formatDate(today, AdWordsApp.currentAccount().getTimeZone(), "yyyyMMdd");
+  
+  var query =
+    "SELECT " +
+    "segments.product_item_id, " +
+    "segments.product_title, " +
+    "metrics.impressions, " +
+    "metrics.clicks, " +
+    "metrics.cost_micros, " +
+    "metrics.conversions, " +
+    "metrics.conversions_value " +
+    "FROM shopping_performance_view " +
+    "WHERE segments.date BETWEEN " + dateFrom + " AND " + dateTo;
+  
+  var report = AdsApp.report(query);
+  var rows = report.rows();
+  var products = [];
+  
+  while (rows.hasNext()) {
+    var row = rows.next();
+    products.push({
+      productId: row["segments.product_item_id"],
+      productTitle: row["segments.product_title"],
+      impressions: parseInt(row["metrics.impressions"], 10),
+      clicks: parseInt(row["metrics.clicks"], 10),
+      cost: parseFloat(row["metrics.cost_micros"]) / 1000000,
+      conversions: parseInt(row["metrics.conversions"], 10),
+      conversionValue: parseFloat(row["metrics.conversions_value"]),
+      roas: parseFloat(row["metrics.conversions_value"]) / (parseFloat(row["metrics.cost_micros"]) / 1000000) || 0
+    });
+  }
+  return products;
+}
+
+function pushToSpreadsheet(data, url, sheetName) {
+  var spreadsheet = SpreadsheetApp.openByUrl(url);
+  var sheet = spreadsheet.getSheetByName(sheetName) || spreadsheet.insertSheet(sheetName);
+  sheet.clear();
+  
+  var headers = [
+    "id", 
+    "Product Title", 
+    "Impressions", 
+    "Clicks", 
+    "Cost", 
+    "Conversions", 
+    "Conversion Value", 
+    "ROAS", 
+    "custom_label_1"
+  ];
+  
+  sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+  
+  if (data.length > 0) {
+    var rows = data.map(product => [
+      product.productId,
+      product.productTitle,
+      product.impressions,
+      product.clicks,
+      product.cost,
+      product.conversions,
+      product.conversionValue,
+      product.roas,
+      "Best Performing"
+    ]);
+    
+    sheet.getRange(2, 1, rows.length, headers.length).setValues(rows);
+  }
+  
+  // Optional: Auto-resize columns for better readability
+  sheet.autoResizeColumns(1, headers.length);
+}

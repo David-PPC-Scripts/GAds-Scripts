@@ -1,0 +1,73 @@
+var SPREADSHEET_URL = "YOUR SHEET URL";
+
+function main() {
+  Logger.log("Starting script...");
+  var products = getFilteredProducts(60, 5); // 60 days, less than 5 impressions
+  Logger.log("Filtered products: " + JSON.stringify(products));
+  pushToSpreadsheet(products, SPREADSHEET_URL, "Filtered Products");
+}
+
+function getFilteredProducts(daysAgo, impressionThreshold) {
+  var data = fetchProductMetrics(daysAgo);
+  Logger.log("Retrieved products: " + JSON.stringify(data)); // Log all products
+  return data.filter(row => row.impressions < impressionThreshold); // Filter products with <5 impressions
+}
+
+function fetchProductMetrics(daysAgo) {
+  var today = new Date();
+  var startDate = new Date(today.getTime() - daysAgo * 24 * 60 * 60 * 1000);
+  var dateFrom = Utilities.formatDate(startDate, AdWordsApp.currentAccount().getTimeZone(), "yyyyMMdd");
+  var dateTo = Utilities.formatDate(today, AdWordsApp.currentAccount().getTimeZone(), "yyyyMMdd");
+
+  var query =
+    "SELECT segments.product_item_id, metrics.impressions, metrics.clicks, metrics.cost_micros, metrics.conversions, metrics.conversions_value " +
+    "FROM shopping_performance_view " +
+    "WHERE segments.date BETWEEN " + dateFrom + " AND " + dateTo;
+
+  Logger.log("Query: " + query); // Log the query for debugging
+
+  var report = AdsApp.report(query);
+  var rows = report.rows();
+  var products = [];
+
+  while (rows.hasNext()) {
+    var row = rows.next();
+    products.push({
+      productId: row["segments.product_item_id"],
+      impressions: parseInt(row["metrics.impressions"], 10),
+      clicks: parseInt(row["metrics.clicks"], 10),
+      cost: parseFloat(row["metrics.cost_micros"]) / 1000000, // Convert micros to currency
+      conversions: parseInt(row["metrics.conversions"], 10),
+      conversionValue: parseFloat(row["metrics.conversions_value"]),
+      roas: parseFloat(row["metrics.conversions_value"]) / (parseFloat(row["metrics.cost_micros"]) / 1000000) || 0 // Handle divide by zero
+    });
+  }
+
+  Logger.log("Fetched products: " + JSON.stringify(products)); // Log fetched data
+  return products;
+}
+
+function pushToSpreadsheet(data, url, sheetName) {
+  var MAX_ROWS = 50000; // Prevent exceeding Google Sheets limits
+  data = data.slice(0, MAX_ROWS); // Limit the number of rows written
+
+  var spreadsheet = SpreadsheetApp.openByUrl(url);
+  var sheet = spreadsheet.getSheetByName(sheetName) || spreadsheet.insertSheet(sheetName);
+  sheet.clear();
+  var headers = ["id", "Impressions", "Clicks", "Cost", "Conversions", "Conversion Value", "ROAS", "custom label 1"];
+  sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+  
+  if (data.length > 0) {
+    var rows = data.map(product => [
+      product.productId,
+      product.impressions,
+      product.clicks,
+      product.cost,
+      product.conversions,
+      product.conversionValue,
+      product.roas,
+      "<5 imp last 60 days" // Add the custom label value
+    ]);
+    sheet.getRange(2, 1, rows.length, headers.length).setValues(rows);
+  }
+}
